@@ -122,9 +122,9 @@ function resize() {
   renderer.setSize(w, h);
   camera.aspect = w / h;
   // fit the scene (plate width, floor to hat height) into the band between the title and the controls
-  const top = $('hdr').getBoundingClientRect().bottom + 8, bottom = h - $('ftr').getBoundingClientRect().top + 8;
+  const top = $('hdr').getBoundingClientRect().bottom + 12, bottom = h - $('ftr').getBoundingClientRect().top + 28; // the plate's front edge dips below the scene centre line, so the bottom gets more room
   const free = Math.max(h * 0.35, h - top - bottom);
-  const dist = Math.max(11, 4.7 / (T * camera.aspect), (6.6 * h / free) / (2 * T));
+  const dist = Math.max(11, 4.7 / (T * camera.aspect), (7 * h / free) / (2 * T));
   const aimY = 0.7 + ((top - bottom) / 2) / (h / (2 * T * dist)); // scene centre (0.7) lands mid-band
   camera.position.set(0, aimY + 0.22 * dist, dist);
   camera.lookAt(0, aimY, 0);
