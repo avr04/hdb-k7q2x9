@@ -390,13 +390,13 @@ function setLit(on) {
   lit = on; celebrated = false;
   const t = performance.now() / 1000;
   flames.forEach((_, i) => { delay[i] = on ? t : Infinity; }); // when blowing out, she sets the timing once she arrives
-  if (!on) { stays = true; tasks.push({ type: 'blow' }); }
+  if (!on) { stays = true; tasks.push({ type: 'blow' }); unlockAudio(); initAudio(); }
   $('blow').hidden = !on; // no relighting: a refresh brings the candles back  $('hint').textContent = on ? 'Tap the cake to blow out the candles. Pop the balloons. Drag to spin.' : 'Make a wish...';
 }
 $('blow').addEventListener('click', () => lit && setLit(false));
 
 // audio
-let ac, keepAlive, tunePlaying = false, tunePaused = false;
+let ac, keepAlive, tunePlaying = false, tunePaused = false, audioEnd = 0; // audioEnd: audio-clock time the last scheduled sound stops
 function silentWav() { // 1 s of silence as a WAV blob
   const n = 8000, b = new DataView(new ArrayBuffer(44 + n)), w = (o, s) => [...s].forEach((c, i) => b.setUint8(o + i, c.charCodeAt(0)));
   w(0, 'RIFF'); b.setUint32(4, 36 + n, true); w(8, 'WAVEfmt '); b.setUint32(16, 16, true); b.setUint16(20, 1, true); b.setUint16(22, 1, true);
@@ -408,20 +408,14 @@ function unlockAudio() { // iPhones mute web audio on silent mode unless the pag
   try { navigator.audioSession.type = 'playback'; } catch (e) {}
   try { keepAlive = keepAlive || Object.assign(new Audio(silentWav()), { loop: true }); keepAlive.play().catch(() => {}); } catch (e) {}
 }
-$('tune').addEventListener('click', () => {
-  const btn = $('tune');
-  if (tunePlaying) { // clicking during the song pauses it, clicking again resumes
-    tunePaused = !tunePaused;
-    (tunePaused ? ac.suspend() : ac.resume()).catch(() => {});
-    btn.textContent = tunePaused ? 'Resume tune' : 'Pause tune';
-    return;
-  }
-  unlockAudio();
+function initAudio() { // must run inside a tap; sounds scheduled later (the celebration) then play without another tap
   ac = ac || new (window.AudioContext || window.webkitAudioContext)();
-  ac.resume().catch(() => {}); // not awaited: phones only allow it inside the tap, so the notes are scheduled right now
-  tunePlaying = true; tunePaused = false;
-  const hz = { G4: 392, A4: 440, B4: 494, C5: 523, D5: 587, E5: 659, F5: 698, G5: 784 };
+  ac.resume().catch(() => {});
+}
+function startTune() {
+  const btn = $('tune'), hz = { G4: 392, A4: 440, B4: 494, C5: 523, D5: 587, E5: 659, F5: 698, G5: 784 };
   const song = 'G4 .75,G4 .25,A4 1,G4 1,C5 1,B4 2,G4 .75,G4 .25,A4 1,G4 1,D5 1,C5 2,G4 .75,G4 .25,G5 1,E5 1,C5 1,B4 1,A4 1,F5 .75,F5 .25,E5 1,C5 1,D5 1,C5 2';
+  tunePlaying = true; tunePaused = false;
   let t = ac.currentTime + 0.1;
   song.split(',').forEach((n) => {
     const [name, beats] = n.split(' '), d = beats * 0.42, g = ac.createGain();
@@ -435,13 +429,62 @@ $('tune').addEventListener('click', () => {
     t += d;
   });
   btn.textContent = 'Pause tune';
-  setTimeout(() => { if (ac.state !== 'running' && !tunePaused) $('hint').textContent = 'No sound? Check volume and silent mode.'; }, 800);
+  audioEnd = Math.max(audioEnd, t);
   const end = t, poll = setInterval(() => { // the audio clock stands still while paused, so the end is judged on it
     if (ac.currentTime <= end) return;
     clearInterval(poll); tunePlaying = false; btn.textContent = 'Play a tune';
-    if (keepAlive) keepAlive.pause();
+    if (keepAlive && ac.currentTime > audioEnd) keepAlive.pause();
   }, 300);
+}
+$('tune').addEventListener('click', () => {
+  if (tunePlaying) { // clicking during the song pauses it (and the crowd), clicking again resumes
+    tunePaused = !tunePaused;
+    (tunePaused ? ac.suspend() : ac.resume()).catch(() => {});
+    $('tune').textContent = tunePaused ? 'Resume tune' : 'Pause tune';
+    return;
+  }
+  unlockAudio(); initAudio(); startTune(); // notes are scheduled inside the tap, which phones require
+  setTimeout(() => { if (ac.state !== 'running' && !tunePaused) $('hint').textContent = 'No sound? Check volume and silent mode.'; }, 800);
 });
+
+// crowd sounds, all synthesised: applause from random noise claps, voices from a sawtooth through vowel filters
+function applause(t0, dur) {
+  const sr = ac.sampleRate, len = Math.floor(sr * dur), buf = ac.createBuffer(1, len, sr), d = buf.getChannelData(0);
+  for (let c = 0; c < dur * 120; c++) {
+    const at = Math.floor(Math.random() * len), pos = at / len, n = Math.floor(sr * (0.012 + Math.random() * 0.02)), amp = 0.2 + Math.random() * 0.8;
+    if (Math.random() > Math.min(1, pos * 6, (1 - pos) * 3)) continue; // thin out at the start and the end
+    for (let i = 0; i < n && at + i < len; i++) d[at + i] += (Math.random() * 2 - 1) * amp * Math.exp(-i / (n * 0.3));
+  }
+  const src = ac.createBufferSource(), hp = ac.createBiquadFilter(), g = ac.createGain();
+  src.buffer = buf; hp.type = 'highpass'; hp.frequency.value = 900; g.gain.value = 0.3;
+  src.connect(hp).connect(g).connect(ac.destination); src.start(t0);
+}
+function voice(t, f0, f1, dur, amp, formants) {
+  const o = ac.createOscillator(), g = ac.createGain(), v = ac.createOscillator(), vg = ac.createGain();
+  o.type = 'sawtooth'; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+  v.frequency.value = 6; vg.gain.value = f0 * 0.02; v.connect(vg).connect(o.frequency); // vibrato
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(amp, t + Math.min(0.08, dur / 3)); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  formants.forEach(([fc, q, a]) => {
+    const b = ac.createBiquadFilter(), ga = ac.createGain();
+    b.type = 'bandpass'; b.frequency.value = fc; b.Q.value = q; ga.gain.value = a;
+    o.connect(b).connect(ga).connect(g);
+  });
+  g.connect(ac.destination);
+  o.start(t); v.start(t); o.stop(t + dur); v.stop(t + dur);
+}
+const WOO = [[350, 5, 1], [850, 5, 0.4]], HA = [[700, 6, 1], [1150, 6, 0.7]];
+function celebrationSound() {
+  if (!ac) return;
+  const t0 = ac.currentTime + 0.05;
+  if (!tunePlaying) startTune();
+  applause(t0 + 0.1, 8);
+  [[0.4, 200, 440], [1.0, 330, 700], [1.7, 160, 360], [2.6, 380, 800]].forEach(([dt, a, b]) => voice(t0 + dt, a, b, 0.7, 0.22, WOO)); // woo!
+  [[0.7, 200], [1.5, 300], [2.3, 170], [3.2, 260], [4.4, 330]].forEach(([dt, base]) => { // ha ha ha
+    for (let i = 0; i < 5; i++) voice(t0 + dt + i * 0.17, base * (1 - i * 0.04), base * (0.9 - i * 0.04), 0.11, 0.18, HA);
+  });
+  audioEnd = Math.max(audioEnd, t0 + 8.2);
+  setTimeout(() => { if (keepAlive && ac.currentTime > audioEnd) keepAlive.pause(); }, 8800);
+}
 
 // input: tap vs drag
 const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
@@ -469,6 +512,7 @@ cv.addEventListener('pointerup', (e) => {
   } else if (lit) setLit(false);
 });
 cv.addEventListener('pointercancel', () => { down = null; });
+cv.addEventListener('click', initAudio);
 
 // loop
 const clock = new THREE.Clock();
@@ -615,6 +659,7 @@ function frame() {
   if (!lit && !celebrated && lightSum === 0) {
     celebrated = true; cheerT = 0; twirlT = 0; partyT = 0; waveI = 0; flash = 1;
     releaseBalloons();
+    try { celebrationSound(); } catch (e) {} // audio trouble must never stop the show
     burst(0, 1.6, 0, 320, 7);
     $('hint').textContent = 'Wish made. Happy birthday, ' + NAME + '!';
   }
