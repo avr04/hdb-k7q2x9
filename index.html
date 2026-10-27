@@ -1,0 +1,642 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Make a Wish</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bagel+Fat+One&family=Figtree:wght@500;700&display=swap">
+<style>
+/* Night-sky stage: full-bleed WebGL cake, big display title over it, quiet controls along the bottom. */
+:root {
+  --night: #171234;
+  --night-lift: #2f2266;
+  --cream: #fff3df;
+  --candy: #ff7aa8;
+  --mint: #7be0c1;
+  --flame: #ffb347;
+  --font-display: "Bagel Fat One", "Arial Rounded MT Bold", system-ui, sans-serif;
+  --font-body: "Figtree", system-ui, sans-serif;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--night);
+  background-image: radial-gradient(120% 90% at 50% 100%, var(--night-lift), var(--night) 70%);
+  color: var(--cream);
+  font-family: var(--font-body);
+}
+#stage { position: fixed; inset: 0; }
+#stage canvas { display: block; touch-action: none; cursor: pointer; }
+.ui {
+  position: fixed; inset: 0;
+  display: flex; flex-direction: column; justify-content: space-between; align-items: center;
+  padding-block: calc(24px + env(safe-area-inset-top, 0px)) calc(24px + env(safe-area-inset-bottom, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  pointer-events: none;
+  text-align: center;
+}
+h1 {
+  margin: 0;
+  font: 400 clamp(2rem, min(8vw, 9vh), 5rem)/1 var(--font-display);
+  text-wrap: balance;
+  text-shadow: 0 4px 0 rgba(0, 0, 0, 0.25);
+  animation: rise 1s cubic-bezier(.2, .9, .3, 1.2) both;
+}
+h1 span { color: var(--candy); display: inline-block; animation: bob 2.4s ease-in-out infinite; }
+.bottom { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+#hint { margin: 10px 0 0; min-height: 1.5em; font-size: clamp(1rem, 2.4vw, 1.25rem); font-weight: 700; line-height: 1.5; color: var(--mint); text-wrap: balance; }
+.tips { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 16px; margin: 0; padding: 0; list-style: none; font-size: 0.85rem; opacity: 0.85; }
+.tips li { display: flex; align-items: center; gap: 6px; transition: opacity 0.3s; }
+.tips li::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--candy); }
+.tips li:nth-child(2)::before { background: var(--flame); }
+.row { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; pointer-events: auto; }
+button {
+  font: 700 1rem var(--font-body);
+  color: var(--night); background: var(--cream);
+  border: 0; border-radius: 999px; padding: 12px 22px; cursor: pointer;
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.3);
+  transition: transform 0.12s;
+}
+button:hover { transform: translateY(-2px); }
+button:active { transform: translateY(2px); box-shadow: 0 1px 0 rgba(0, 0, 0, 0.3); }
+button:disabled { opacity: 0.6; cursor: default; transform: none; }
+button.alt { background: transparent; color: var(--cream); box-shadow: inset 0 0 0 2px var(--cream); }
+button:focus-visible { outline: 3px solid var(--mint); outline-offset: 3px; }
+@keyframes rise { from { opacity: 0; transform: translateY(24px) scale(0.92); } to { opacity: 1; transform: none; } }
+@keyframes bob { 50% { transform: translateY(-6px) rotate(-1.5deg); } }
+@media (prefers-reduced-motion: reduce) { h1, h1 span { animation: none; } }
+</style>
+
+</head>
+<body>
+<div id="stage"></div>
+<main class="ui">
+  <header id="hdr">
+    <h1>Happy Birthday,<br><span id="who">Hita</span>!</h1>
+    <p id="hint"></p>
+  </header>
+  <div class="bottom" id="ftr">
+    <div class="row">
+      <button id="blow" type="button">Blow out the candles</button>
+      <button id="tune" type="button" class="alt">Play a tune</button>
+    </div>
+    <ul class="tips">
+      <li>Tap a balloon to pop</li>
+      <li>Drag to spin</li>
+    </ul>
+  </div>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const NAME = 'Hita'; // shortcut: name is hardcoded, edit here to personalise
+document.getElementById('who').textContent = NAME;
+
+const $ = (id) => document.getElementById(id);
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const FOV = 50, T = Math.tan(FOV * Math.PI / 360);
+
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+} catch (e) {
+  $('hint').textContent = 'Your browser cannot draw the 3D scene, but the wish still counts. Happy birthday!';
+  throw e;
+}
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+$('stage').appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 200);
+let hw = 8, hh = 5; // visible half-width / half-height at z = 0
+let layoutCrowd = null; // set once the audience exists
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  // fit the scene (plate width, floor to hat height) into the band between the title and the controls
+  const top = $('hdr').getBoundingClientRect().bottom + 8, bottom = h - $('ftr').getBoundingClientRect().top + 8;
+  const free = Math.max(h * 0.35, h - top - bottom);
+  const dist = Math.max(11, 4.7 / (T * camera.aspect), (6.6 * h / free) / (2 * T));
+  const aimY = 0.7 + ((top - bottom) / 2) / (h / (2 * T * dist)); // scene centre (0.7) lands mid-band
+  camera.position.set(0, aimY + 0.22 * dist, dist);
+  camera.lookAt(0, aimY, 0);
+  camera.updateProjectionMatrix();
+  hh = T * dist; hw = hh * camera.aspect;
+  if (layoutCrowd) layoutCrowd();
+}
+addEventListener('resize', resize);
+if (typeof ResizeObserver !== 'undefined') { // also catches panes and tabs resizing without a window resize, and the fonts loading
+  const ro = new ResizeObserver(resize);
+  [document.documentElement, $('hdr'), $('ftr')].forEach((el) => ro.observe(el));
+}
+resize();
+
+// lights
+const amb = new THREE.AmbientLight(0x8a7cff, 0.7); scene.add(amb);
+const key = new THREE.DirectionalLight(0xffffff, 0.8); key.position.set(4, 8, 6); scene.add(key);
+const warm = new THREE.PointLight(0xffa860, 1.2, 14); warm.position.set(0, 2.4, 0); scene.add(warm);
+
+// helpers
+const mat = (c, r = 0.6) => new THREE.MeshStandardMaterial({ color: c, roughness: r });
+function glow(stops) {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d'), r = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  stops.forEach(([o, col]) => r.addColorStop(o, col));
+  g.fillStyle = r; g.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+}
+
+// cake
+const cake = new THREE.Group(); scene.add(cake);
+const add = (geo, m, x, y, z) => { const o = new THREE.Mesh(geo, m); o.position.set(x, y, z); cake.add(o); return o; };
+add(new THREE.CylinderGeometry(3.5, 3.5, 0.2, 64), mat(0xfdf6ee, 0.3), 0, -2.05, 0);  // plate
+add(new THREE.CylinderGeometry(2.6, 2.6, 1.4, 64), mat(0xf2c98f), 0, -1.25, 0);        // bottom tier, top y = -0.55
+add(new THREE.CylinderGeometry(1.8, 1.8, 1.2, 64), mat(0xfff0dc), 0, 0.05, 0);         // top tier, top y = 0.65
+[[2.6, -0.55, 0xff7aa8], [1.8, 0.65, 0x7be0c1]].forEach(([r, y, c]) => {
+  const ring = add(new THREE.TorusGeometry(r, 0.14, 12, 64), mat(c, 0.35), 0, y, 0);
+  ring.rotation.x = Math.PI / 2;
+});
+const pearl = new THREE.SphereGeometry(0.12, 12, 10), pearlMat = mat(0xffffff, 0.2);
+for (let i = 0; i < 16; i++) {
+  const a = i / 16 * Math.PI * 2;
+  add(pearl, pearlMat, Math.cos(a) * 2.2, -0.42, Math.sin(a) * 2.2);
+}
+
+// candles + flames
+const flameTex = glow([[0, 'rgba(255,255,230,1)'], [0.25, 'rgba(255,200,90,.95)'], [0.6, 'rgba(255,120,30,.35)'], [1, 'rgba(255,90,0,0)']]);
+const smokeTex = glow([[0, 'rgba(220,220,235,.6)'], [1, 'rgba(220,220,235,0)']]);
+const CANDLES = 5, candleCols = [0xff7aa8, 0x7be0c1, 0xffb347, 0x8fb8ff, 0xc79bff];
+const flames = [], level = [], delay = [];
+for (let i = 0; i < CANDLES; i++) {
+  const a = i / CANDLES * Math.PI * 2, x = Math.cos(a) * 0.85, z = Math.sin(a) * 0.85;
+  add(new THREE.CylinderGeometry(0.08, 0.08, 0.9, 16), mat(candleCols[i], 0.5), x, 1.1, z);
+  const f = new THREE.Sprite(new THREE.SpriteMaterial({ map: flameTex, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true }));
+  f.center.set(0.5, 0.1); f.position.set(x, 1.62, z); cake.add(f);
+  flames.push(f); level.push(1); delay.push(0);
+}
+const smoke = [];
+for (let i = 0; i < CANDLES; i++) {
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: smokeTex, transparent: true, depthWrite: false, opacity: 0 }));
+  s.userData.life = 0; scene.add(s); smoke.push(s);
+}
+
+// stars
+{
+  const n = 500, p = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { p[i * 3] = (Math.random() - 0.5) * 90; p[i * 3 + 1] = (Math.random() - 0.5) * 60; p[i * 3 + 2] = -15 - Math.random() * 30; }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(p, 3));
+  var starMat = new THREE.PointsMaterial({ color: 0xfff3df, size: 0.28, transparent: true, opacity: 0.8, depthWrite: false });
+  scene.add(new THREE.Points(g, starMat));
+}
+
+// girl behind the cake: she leans in and blows when the candles are blown out
+const SKIN = 0xe8b48c, sph = (r) => new THREE.SphereGeometry(r, 20, 16);
+const girl = new THREE.Group(); girl.position.set(0, 0, -2.9); scene.add(girl);
+const gadd = (parent, geo, m, x, y, z) => { const o = new THREE.Mesh(geo, m); o.position.set(x, y, z); parent.add(o); return o; };
+gadd(girl, new THREE.CylinderGeometry(0.35, 0.85, 1.6, 32), mat(0xc79bff, 0.5), 0, 1.2, 0); // dress
+gadd(girl, new THREE.CylinderGeometry(0.12, 0.12, 0.2, 12), mat(SKIN), 0, 2.08, 0);        // neck
+const arms = [-1, 1].map((s) => {
+  const a = new THREE.Group(); a.position.set(s * 0.4, 1.85, 0); a.userData.s = s; girl.add(a);
+  gadd(a, new THREE.CylinderGeometry(0.09, 0.09, 0.8, 10), mat(SKIN), 0, -0.4, 0);
+  gadd(a, sph(0.11), mat(SKIN), 0, -0.82, 0);
+  return a;
+});
+const legs = [-1, 1].map((s) => {
+  const l = new THREE.Group(); l.position.set(s * 0.2, 0.45, 0); girl.add(l);
+  gadd(l, new THREE.CylinderGeometry(0.07, 0.07, 0.5, 10), mat(SKIN), 0, -0.25, 0);
+  gadd(l, sph(0.1), mat(0xff7aa8), 0, -0.52, 0.05).scale.set(1, 0.7, 1.4); // shoe
+  return l;
+});
+const wingM = new THREE.MeshStandardMaterial({ color: 0xbfe9ff, roughness: 0.3, transparent: true, opacity: 0.75, side: THREE.DoubleSide });
+const wings = [-1, 1].map((s) => {
+  const w = new THREE.Group(); w.position.set(s * 0.1, 1.7, -0.25); w.userData.s = s; girl.add(w);
+  gadd(w, sph(0.5), wingM, s * 0.4, 0.15, 0).scale.set(1, 1.2, 0.08);
+  return w;
+});
+const head = new THREE.Group(); head.position.y = 2.55; girl.add(head);
+gadd(head, sph(0.45), mat(SKIN, 0.5), 0, 0, 0);
+const hairM = mat(0x4a2c1a, 0.7);
+gadd(head, new THREE.SphereGeometry(0.5, 24, 16, 0, Math.PI * 2, 0, 1.3), hairM, 0, 0.03, -0.02); // fringe
+gadd(head, sph(0.46), hairM, 0, -0.02, -0.14);                                                      // back of hair
+[-1, 1].forEach((s) => {
+  gadd(head, sph(0.2), hairM, s * 0.52, -0.12, -0.1);              // pigtail
+  gadd(head, sph(0.09), mat(0xff7aa8), s * 0.44, 0.1, -0.05);      // ribbon
+});
+gadd(head, new THREE.ConeGeometry(0.26, 0.6, 20), mat(0x7be0c1), 0, 0.62, -0.02).rotation.z = -0.15; // party hat
+gadd(head, sph(0.07), mat(0xffb347), -0.04, 0.93, -0.02);
+const eyes = [-1, 1].map((s) => gadd(head, sph(0.05), mat(0x24143a, 0.3), s * 0.16, 0.03, 0.41));
+const cheeks = [-1, 1].map((s) => { const c = gadd(head, sph(0.08), mat(0xff8fa8, 0.8), s * 0.27, -0.1, 0.33); c.scale.z = 0.4; return c; });
+const smile = gadd(head, new THREE.TorusGeometry(0.08, 0.018, 8, 16, Math.PI), mat(0x8a2f4a), 0, -0.08, 0.43);
+smile.rotation.z = Math.PI;
+const oMouth = gadd(head, sph(0.06), mat(0x5a1a2e), 0, -0.15, 0.42); oMouth.scale.z = 0.5; oMouth.visible = false;
+const puffs = [];
+for (let i = 0; i < 14; i++) {
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: smokeTex, transparent: true, depthWrite: false, opacity: 0 }));
+  s.userData = { life: 0, v: new THREE.Vector3() }; scene.add(s); puffs.push(s);
+}
+function spawnPuff() {
+  const p = puffs.find((q) => q.userData.life <= 0);
+  if (!p) return;
+  oMouth.getWorldPosition(p.position);
+  p.userData.v.set((Math.random() - 0.5) * 0.6, 1.5 + (Math.random() - 0.5) * 0.4, 0).sub(p.position).normalize().multiplyScalar(5);
+  p.userData.life = 0.55;
+}
+let blowT = -1, cheerT = -1, twirlT = -1, puffAcc = 0; // seconds into the blow / cheer / twirl, -1 when idle
+let partyT = -1, waveI = 0, flash = 0; // celebration clock, next confetti wave, light flash
+const WAVES = [0, 0.3, 0.6, 0.9, 1.4, 2, 2.8, 3.6, 4.6, 5.6]; // seconds into the celebration; the first 5 also fire cannons
+const tasks = []; // queued jobs for her: { type: 'blow' } or { type: 'pop', b: balloon }
+let task = null, taskT = 0, stays = false, away = true, park = 1, baseX = 0; // stays: once the candles are blown she remains on screen
+girl.visible = false;
+
+// floor glow, so the cake and the audience have somewhere to stand
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(46, 46), new THREE.MeshBasicMaterial({ map: glow([[0, 'rgba(120,90,230,.95)'], [0.45, 'rgba(70,52,160,.8)'], [1, 'rgba(40,28,100,0)']]), transparent: true, depthWrite: false }));
+floor.rotation.x = -Math.PI / 2; floor.position.y = -2.2; scene.add(floor);
+
+// audience: a ring around the cake, every one turned to face it
+function makePerson(o) {
+  const g = new THREE.Group(), skin = mat(o.skin, 0.5), hair = mat(o.hair, 0.7), dark = mat(0x24143a, 0.3), shoe = mat(o.shoe, 0.6);
+  const sx = o.boy ? 0.42 : 0.34; // shoulder offset
+  if (o.boy) {
+    const pants = mat(o.pants, 0.6);
+    gadd(g, new THREE.CylinderGeometry(0.4, 0.34, 1.15, 20), mat(o.shirt, 0.5), 0, 1.3, 0); // shirt
+    [-1, 1].forEach((s) => gadd(g, new THREE.CylinderGeometry(0.12, 0.12, 0.75, 10), pants, s * 0.16, 0.38, 0));
+  } else {
+    gadd(g, new THREE.CylinderGeometry(0.3, 0.62, 1.3, 24), mat(o.dress, 0.5), 0, 1.3, 0); // dress
+    [-1, 1].forEach((s) => gadd(g, new THREE.CylinderGeometry(0.1, 0.1, 0.65, 10), skin, s * 0.18, 0.33, 0));
+  }
+  [-1, 1].forEach((s) => gadd(g, sph(0.12), shoe, s * (o.boy ? 0.16 : 0.18), 0.05, 0.06).scale.set(1, 0.7, 1.4));
+  gadd(g, new THREE.CylinderGeometry(0.1, 0.1, 0.15, 10), skin, 0, 2.0, 0);
+  const arms = [-1, 1].map((s) => {
+    const a = new THREE.Group(); a.position.set(s * sx, 1.85, 0); g.add(a);
+    gadd(a, new THREE.CylinderGeometry(0.08, 0.08, 0.75, 10), skin, 0, -0.38, 0);
+    gadd(a, sph(0.1), skin, 0, -0.78, 0);
+    return a;
+  });
+  const head = new THREE.Group(); head.position.y = 2.4; g.add(head);
+  gadd(head, sph(0.4), skin, 0, 0, 0);
+  gadd(head, new THREE.SphereGeometry(0.44, 20, 14, 0, Math.PI * 2, 0, o.boy ? 1.25 : 1.35), hair, 0, 0.03, -0.02); // boys: shorter fringe
+  gadd(head, sph(o.boy ? 0.38 : 0.41), hair, 0, -0.02, o.boy ? -0.08 : -0.12);
+  if (o.long) gadd(head, sph(0.3), hair, 0, -0.32, -0.2).scale.y = 1.6;
+  [-1, 1].forEach((s) => gadd(head, sph(0.045), dark, s * 0.14, 0.03, 0.36));
+  gadd(head, new THREE.TorusGeometry(0.07, 0.016, 8, 14, Math.PI), mat(0x8a2f4a), 0, -0.05, 0.38).rotation.z = Math.PI;
+  if (o.hat) gadd(head, new THREE.ConeGeometry(0.22, 0.5, 18), mat(o.hat), 0, 0.55, 0);
+  return { g, arms, head, ph: Math.random() * 6.28 };
+}
+const crowd = [ // 5 boys and 4 girls, alternating around the ring
+  { boy: 1, skin: 0xf1c9a5, shirt: 0x6fc3ff, pants: 0x3b3b8c, hair: 0x4a2c1a, shoe: 0xffffff },
+  { skin: 0x8d5a3b, dress: 0x7be0c1, hair: 0x1a1210, shoe: 0xff7aa8, hat: 0xffb347, long: true },
+  { boy: 1, skin: 0xe8b48c, shirt: 0xff6b6b, pants: 0x2a3a6b, hair: 0x120c0a, shoe: 0xfff3df, hat: 0x7be0c1 },
+  { skin: 0xf1c9a5, dress: 0xc79bff, hair: 0xb8651b, shoe: 0xffffff, long: true },
+  { boy: 1, skin: 0x5e3a28, shirt: 0xf5e663, pants: 0x24406b, hair: 0x0f0a08, shoe: 0x7be0c1 },
+  { skin: 0xe0a97c, dress: 0xff9bd0, hair: 0x2b1a12, shoe: 0xfff3df, hat: 0xf5e663 },
+  { boy: 1, skin: 0x9a6a46, shirt: 0x7be0c1, pants: 0x3b2f6b, hair: 0x120c0a, shoe: 0x8fb8ff, hat: 0xff7aa8 },
+  { skin: 0xf4d3b5, dress: 0xffb347, hair: 0x4a2c1a, shoe: 0xffffff, hat: 0xc79bff, long: true },
+  { boy: 1, skin: 0x7a4b30, shirt: 0x8fb8ff, pants: 0x2a2a55, hair: 0x1a1210, shoe: 0xff7aa8 },
+].map((o) => { const p = makePerson(o); scene.add(p.g); return p; });
+const ANGLES = [-118, -88, -60, -32, -12, 24, 52, 82, 116]; // degrees around the cake; behind (0) to the front corners (±120)
+layoutCrowd = () => {
+  const rx = Math.max(4.4, Math.min(10, hw * 0.78)), rz = Math.max(6.2, Math.min(8, rx * 0.8)); // ring grows on wide screens, never closer than the plate edge
+  crowd.forEach((p, i) => {
+    const a = ANGLES[i] * Math.PI / 180, r = 1 + (i % 3) * 0.08, x = rx * r * Math.sin(a), z = -rz * r * Math.cos(a);
+    p.g.position.set(x, -2.17, z);
+    p.g.rotation.y = Math.atan2(-x, -z); // face the cake
+    p.g.scale.setScalar(0.9 + (i % 4) * 0.05);
+  });
+};
+layoutCrowd();
+
+// confetti pool
+const N = reduce ? 400 : 1400, PAL = ['#ff7aa8', '#7be0c1', '#ffb347', '#8fb8ff', '#fff3df', '#c79bff'].map((c) => new THREE.Color(c));
+const cPos = new Float32Array(N * 3).fill(-999), cCol = new Float32Array(N * 3), cVel = new Float32Array(N * 3), cLife = new Float32Array(N);
+const cGeo = new THREE.BufferGeometry();
+cGeo.setAttribute('position', new THREE.BufferAttribute(cPos, 3));
+cGeo.setAttribute('color', new THREE.BufferAttribute(cCol, 3));
+const confetti = new THREE.Points(cGeo, new THREE.PointsMaterial({ size: 0.2, vertexColors: true, depthWrite: false }));
+confetti.frustumCulled = false; scene.add(confetti);
+let cur = 0;
+function emit(x, y, z, vx, vy, vz, c, life) {
+  for (let n = 0; n < N; n++) {
+    const i = (cur + n) % N;
+    if (cLife[i] > 0) continue;
+    cur = i + 1;
+    const j = i * 3;
+    cPos[j] = x; cPos[j + 1] = y; cPos[j + 2] = z;
+    cVel[j] = vx; cVel[j + 1] = vy; cVel[j + 2] = vz;
+    cCol[j] = c.r; cCol[j + 1] = c.g; cCol[j + 2] = c.b;
+    cLife[i] = life;
+    return;
+  }
+}
+function burst(x, y, z, n, speed, pal = PAL, bx = 0, by = 0) { // confetti; bx / by tilt the spray like a cannon
+  if (reduce) n = Math.ceil(n / 3);
+  for (let k = 0; k < n; k++) {
+    const v = speed * (0.4 + Math.random() * 0.6);
+    emit(x, y, z, (Math.random() - 0.5) * 2 * v + bx * v, Math.random() * v + v * 0.3 + by * v, (Math.random() - 0.5) * v, pal[(Math.random() * pal.length) | 0], 2.5 + Math.random() * 2);
+  }
+  cGeo.attributes.color.needsUpdate = true;
+}
+function sparks(x, y, z, n, c, speed = 5) { // round burst: firework or balloon pop
+  if (reduce) n = Math.ceil(n / 3);
+  for (let k = 0; k < n; k++) {
+    const a = Math.random() * Math.PI * 2, u = Math.random() * 2 - 1, s = Math.sqrt(1 - u * u), v = speed * (0.5 + Math.random() * 0.5);
+    emit(x, y, z, Math.cos(a) * s * v, u * v, Math.sin(a) * s * v, c, 0.9 + Math.random() * 0.7);
+  }
+  cGeo.attributes.color.needsUpdate = true;
+}
+
+// balloons
+const bColors = [0xff7aa8, 0x7be0c1, 0xffb347, 0x8fb8ff, 0xc79bff, 0xff6b6b, 0xf5e663];
+const balloons = [];
+const bGeo = new THREE.SphereGeometry(0.7, 24, 18);
+for (let i = 0; i < 14; i++) { // the last 7 wait out of sight until the wish is made
+  const g = new THREE.Group(), body = new THREE.Mesh(bGeo, mat(bColors[i % 7], 0.25));
+  body.scale.y = 1.25; body.userData.balloon = g; g.add(body);
+  const str = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, -0.9, 0), new THREE.Vector3(0.15, -1.9, 0), new THREE.Vector3(-0.1, -3, 0)]), new THREE.LineBasicMaterial({ color: 0xfff3df, transparent: true, opacity: 0.6 }));
+  g.add(str);
+  g.userData = { color: new THREE.Color(bColors[i % 7]), lane: 0, speed: 0, phase: Math.random() * 6 };
+  scene.add(g); balloons.push(g); respawn(g, true);
+  if (i >= 7) { g.userData.waiting = true; g.visible = false; }
+}
+function respawn(g, scatter) {
+  const u = g.userData;
+  u.lane = (Math.random() < 0.5 ? -1 : 1) * (0.5 + Math.random() * 0.5);
+  u.speed = 0.5 + Math.random() * 0.6;
+  g.position.z = -3 + Math.random() * 4;
+  g.position.y = scatter ? (Math.random() * 2 - 1) * (hh + 3) : -hh - 3;
+}
+
+function popBalloon(g) {
+  const p = g.position, c = g.userData.color;
+  burst(p.x, p.y, p.z, 50, 4, [c, PAL[4], PAL[2]]);
+  sparks(p.x, p.y, p.z, 30, c, 5);
+  respawn(g, false);
+}
+function releaseBalloons() { // a surprise bunch floats up when the wish is made
+  balloons.forEach((g) => {
+    if (!g.userData.waiting) return;
+    g.userData.waiting = false; g.visible = true; respawn(g, false); g.position.y -= Math.random() * 4;
+  });
+}
+
+// state + blow out
+let lit = true, celebrated = false;
+function setLit(on) {
+  lit = on; celebrated = false;
+  const t = performance.now() / 1000;
+  flames.forEach((_, i) => { delay[i] = on ? t : Infinity; }); // when blowing out, she sets the timing once she arrives
+  if (!on) { stays = true; tasks.push({ type: 'blow' }); }
+  $('blow').hidden = !on; // no relighting: a refresh brings the candles back  $('hint').textContent = on ? 'Tap the cake to blow out the candles. Pop the balloons. Drag to spin.' : 'Make a wish...';
+}
+$('blow').addEventListener('click', () => lit && setLit(false));
+
+// audio
+let ac;
+let tunePlaying = false;
+$('tune').addEventListener('click', async () => {
+  const btn = $('tune');
+  if (tunePlaying) { // clicking during the song pauses it, clicking again resumes
+    if (ac.state === 'running') { await ac.suspend(); btn.textContent = 'Resume tune'; }
+    else { await ac.resume(); btn.textContent = 'Pause tune'; }
+    return;
+  }
+  ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+  tunePlaying = true;
+  if (ac.state !== 'running') await ac.resume();
+  const hz = { G4: 392, A4: 440, B4: 494, C5: 523, D5: 587, E5: 659, F5: 698, G5: 784 };
+  const song = 'G4 .75,G4 .25,A4 1,G4 1,C5 1,B4 2,G4 .75,G4 .25,A4 1,G4 1,D5 1,C5 2,G4 .75,G4 .25,G5 1,E5 1,C5 1,B4 1,A4 1,F5 .75,F5 .25,E5 1,C5 1,D5 1,C5 2';
+  let t = ac.currentTime + 0.05;
+  song.split(',').forEach((n) => {
+    const [name, beats] = n.split(' '), d = beats * 0.42, o = ac.createOscillator(), g = ac.createGain();
+    o.type = 'triangle'; o.frequency.value = hz[name];
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.25, t + 0.03); g.gain.exponentialRampToValueAtTime(0.0001, t + d * 0.95);
+    o.connect(g).connect(ac.destination); o.start(t); o.stop(t + d); t += d;
+  });
+  btn.textContent = 'Pause tune';
+  const end = t, poll = setInterval(() => { // the audio clock stands still while paused, so the end is judged on it
+    if (ac.currentTime <= end) return;
+    clearInterval(poll); tunePlaying = false; btn.textContent = 'Play a tune';
+  }, 300);
+});
+
+// input: tap vs drag
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+let down = null;
+const cv = renderer.domElement;
+cv.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY, moved: false }; cv.setPointerCapture(e.pointerId); });
+cv.addEventListener('pointermove', (e) => {
+  if (!down) return;
+  const dx = e.clientX - down.x;
+  if (Math.abs(dx) + Math.abs(e.clientY - down.y) > 6) down.moved = true;
+  cake.rotation.y += (e.movementX || 0) * 0.01;
+});
+cv.addEventListener('pointerup', (e) => {
+  const d = down; down = null;
+  if (!d || d.moved) return;
+  ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  const hit = ray.intersectObjects([...balloons.filter((b) => b.visible).map((b) => b.children[0]), cake], true)[0];
+  if (!hit) return;
+  if (hit.object.userData.balloon) {
+    const g = hit.object.userData.balloon;
+    if (g.userData.frozen) return; // already waiting for her
+    if (stays) { g.userData.frozen = true; tasks.push({ type: 'pop', b: g }); } // after the candles, she pops them
+    else popBalloon(g);
+  } else if (lit) setLit(false);
+});
+cv.addEventListener('pointercancel', () => { down = null; });
+
+// loop
+const clock = new THREE.Clock();
+let t = 0;
+setTimeout(() => burst(0, hh * 0.8, 0, 220, 6), 500); // opening shower
+function frame() {
+  const dt = Math.min(clock.getDelta(), 0.05); t += dt;
+  const now = performance.now() / 1000;
+
+  cake.position.y = reduce ? 0 : Math.sin(t * 1.2) * 0.08;
+  if (!down) cake.rotation.y += (reduce ? 0 : 0.2) * dt;
+  starMat.opacity = 0.65 + 0.15 * Math.sin(t * 2);
+
+  // girl: flies in for a job (blow the candles / pop a balloon) and flies out again unless the candles were blown
+  if (blowT >= 0) { blowT += dt; if (blowT > 2.3) blowT = -1; }
+  if (!task && tasks.length) {
+    task = tasks.shift(); taskT = 0; task.phase = 'run'; task.fromAway = away;
+    if (task.type === 'blow') task.gx = 0;
+    else {
+      const s = task.s = task.b.position.x >= 0 ? 1 : -1, lim = Math.max(0, hw - 2.2);
+      task.gx = Math.max(-lim, Math.min(lim, task.b.position.x - s * 1.5));
+      task.b.userData.glide = new THREE.Vector3(task.gx + s * 1.5, 2.9, -2.6); // balloon drifts to her hand
+    }
+    if (away) {
+      park = task.type === 'pop' ? task.s : Math.random() < 0.5 ? 1 : -1;
+      baseX = park * (hw + 3); away = false; girl.visible = true;
+    }
+  }
+  const wantX = task ? task.gx : stays ? 0 : park * (hw + 3);
+  const dx = wantX - baseX, prevX = baseX;
+  const moving = !away && !(task && task.phase === 'act') && Math.abs(dx) > 0.08;
+  if (away) baseX = park * (hw + 3);
+  else if (moving) baseX += Math.sign(dx) * Math.min(Math.abs(dx), Math.min(7, Math.max(1.2, Math.abs(dx) * 2)) * dt);
+  const vx = (baseX - prevX) / Math.max(dt, 0.001);
+  if (!task && !stays && !away) {
+    park = baseX >= 0 ? 1 : -1; // leave by the nearest side
+    if (Math.abs(baseX) >= hw + 2.9) { away = true; girl.visible = false; }
+  }
+  if (task) {
+    taskT += dt;
+    if (task.phase === 'run' && !moving) {
+      task.phase = 'act'; taskT = 0;
+      if (task.type === 'blow') {
+        if (lit) task = null; // relit before she arrived
+        else {
+          blowT = 0; if (task.fromAway) twirlT = 0;
+          flames.forEach((_, i) => { delay[i] = now + 0.8 + i * 0.12; }); // flames go out as her breath arrives
+        }
+      }
+    }
+  }
+  if (task && task.phase === 'act') {
+    if (task.type === 'blow') { if (blowT < 0 && taskT > 0.05) task = null; }
+    else {
+      if (!task.popped && taskT >= 0.35) {
+        const b = task.b;
+        task.popped = true;
+        b.userData.frozen = false; b.userData.glide = null; popBalloon(b);
+      }
+      if (taskT > 1) task = null;
+    }
+  }
+
+  // girl pose
+  const popping = task && task.type === 'pop' && task.phase === 'act' ? task : null;
+  const fly = moving ? Math.min(1, Math.abs(vx) / 4) : 0, sw = Math.sin(t * 14);
+  let aL = -(0.5 + 0.25 * Math.sin(t * 2.2 + 1.5)), aR = 0.5 + 0.25 * Math.sin(t * 2.2), lunge = 0, jump = 0;
+  aL = aL * (1 - fly) - fly * (1 + 0.3 * sw); aR = aR * (1 - fly) + fly * (1 + 0.3 * sw);
+  if (cheerT >= 0) {
+    cheerT += dt;
+    if (cheerT > 3.6) cheerT = -1;
+    else { jump = Math.abs(Math.sin(cheerT * 7)) * 0.45 * (1 - cheerT / 3.6); aL = -2.6; aR = 2.6; }
+  }
+  if (popping) {
+    const arc = Math.sin(Math.min(taskT / 0.7, 1) * Math.PI); // lunge + hop, peaks as the hand meets the balloon
+    lunge = popping.s * 0.5 * arc; jump = 0.4 * arc;
+    if (popping.s > 0) aR = 2.4; else aL = -2.4;
+    if (taskT > 0.35) { aL = -2.6; aR = 2.6; } // ta-da
+  }
+  const blowing = blowT > 0.7 && blowT < 1.8, k = Math.min(1, dt * 8);
+  const ease = (o, key, v) => { o[key] += (v - o[key]) * k; };
+  ease(girl.rotation, 'x', blowing ? 0.3 : blowT >= 0 && blowT < 0.7 ? -0.1 : 0);
+  ease(girl.rotation, 'z', Math.max(-0.25, Math.min(0.25, -vx * 0.03)) + Math.sin(t * 1.7) * 0.03);
+  ease(head.rotation, 'x', blowing ? 0.2 : 0);
+  head.rotation.z = Math.sin(t * 2.3) * 0.08;
+  const ck = blowT >= 0 && blowT < 1.8 ? 1.6 : 1;
+  cheeks.forEach((c) => { c.scale.x += (ck - c.scale.x) * k; c.scale.y = c.scale.x; });
+  smile.visible = !blowing; oMouth.visible = blowing;
+  eyes.forEach((e) => { e.scale.y = t % 3.6 < 0.12 ? 0.1 : 1; });
+  if (blowing) { puffAcc += dt; while (puffAcc > 0.05) { puffAcc -= 0.05; spawnPuff(); } }
+  ease(arms[0].rotation, 'z', aL); ease(arms[1].rotation, 'z', aR);
+  legs.forEach((l, i) => { l.rotation.x = (i ? sw : -sw) * 0.6 * fly + Math.sin(t * 3 + i * 3) * 0.12; });
+  const flap = 10 + 20 * fly;
+  wings.forEach((w) => { w.rotation.y = w.userData.s * (0.25 + 0.55 * Math.abs(Math.sin(t * flap))); });
+  girl.position.set(baseX + lunge, jump + Math.sin(t * 2.4) * 0.08 + fly * Math.sin(t * 14) * 0.1, -2.9);
+  if (twirlT >= 0) {
+    twirlT += dt;
+    const r = Math.min(twirlT / 0.8, 1);
+    girl.rotation.y = (r < 0.5 ? 2 * r * r : 1 - 2 * (1 - r) * (1 - r)) * Math.PI * 2;
+    if (r >= 1) { twirlT = -1; girl.rotation.y = 0; }
+  }
+  puffs.forEach((p) => {
+    const u = p.userData;
+    if (u.life <= 0) { p.material.opacity = 0; return; }
+    u.life -= dt; p.position.addScaledVector(u.v, dt);
+    p.scale.setScalar(0.25 + (0.55 - u.life) * 1.2); p.material.opacity = Math.max(0, u.life / 0.55) * 0.5;
+  });
+
+  // celebration: cannons + fireworks in waves, light flash, camera punch, and the audience cheers
+  if (partyT >= 0) {
+    partyT += dt;
+    while (waveI < WAVES.length && partyT >= WAVES[waveI]) {
+      const w = waveI++;
+      if (w < 5) [-1, 1].forEach((s) => burst(s * hw * 0.8, -2, 1, 70, 5.5, PAL, -s * 0.45, 1));
+      sparks((Math.random() - 0.5) * hw * 1.4, 2.5 + Math.random() * 3, -4 - Math.random() * 3, 70, PAL[(Math.random() * PAL.length) | 0], 4.5);
+    }
+  }
+  flash *= 1 - Math.min(1, dt * 3);
+  amb.intensity = 0.7 + flash * 0.9;
+  const zoom = partyT >= 0 && partyT < 0.8 ? 1 + 0.07 * Math.sin(partyT / 0.8 * Math.PI) : 1;
+  if (camera.zoom !== zoom) { camera.zoom = zoom; camera.updateProjectionMatrix(); }
+  const party = partyT < 0 ? 0 : Math.max(0.3, 1 - partyT / 10); // they stay happy once the wish is made
+  crowd.forEach((p, i) => {
+    p.g.position.y = -2.17 + Math.abs(Math.sin(t * (5 + i % 3) + p.ph)) * 0.45 * party;
+    p.g.rotation.z = Math.sin(t * 1.5 + p.ph) * (0.03 + 0.06 * party);
+    const up = 0.5 + 0.1 * Math.sin(t * 1.8 + p.ph) + party * 1.8;
+    p.arms[0].rotation.z = -(up + party * 0.35 * Math.sin(t * 9 + p.ph));
+    p.arms[1].rotation.z = up + party * 0.35 * Math.sin(t * 9 + p.ph + 1);
+    p.head.rotation.z = Math.sin(t * 2 + p.ph) * 0.06 * (1 + 2 * party);
+  });
+
+  let lightSum = 0;
+  flames.forEach((f, i) => {
+    const target = lit ? 1 : 0, prev = level[i];
+    if (now >= delay[i]) level[i] += Math.sign(target - level[i]) * Math.min(Math.abs(target - level[i]), dt * (lit ? 3 : 5));
+    if (prev > 0 && level[i] === 0) { // just went out: puff of smoke
+      const s = smoke[i]; s.position.copy(f.position).applyMatrix4(cake.matrixWorld); s.userData.life = 1.6;
+    }
+    const flick = 1 + 0.12 * Math.sin(t * 20 + i * 3) + 0.08 * Math.sin(t * 33 + i);
+    f.scale.set(0.45 * flick * level[i], 0.75 * flick * level[i], 1);
+    lightSum += level[i];
+  });
+  warm.intensity = (lightSum / CANDLES) * (1.2 + 0.2 * Math.sin(t * 18)) + 0.15 + flash * 2;
+  if (!lit && !celebrated && lightSum === 0) {
+    celebrated = true; cheerT = 0; twirlT = 0; partyT = 0; waveI = 0; flash = 1;
+    releaseBalloons();
+    burst(0, 1.6, 0, 320, 7);
+    $('hint').textContent = 'Wish made. Happy birthday, ' + NAME + '!';
+  }
+  smoke.forEach((s) => {
+    const u = s.userData;
+    if (u.life <= 0) { s.material.opacity = 0; return; }
+    u.life -= dt; s.position.y += dt * 0.9; s.position.x += Math.sin(t * 3 + u.life) * dt * 0.2;
+    s.scale.setScalar(0.5 + (1.6 - u.life) * 0.8); s.material.opacity = Math.max(0, u.life / 1.6) * 0.6;
+  });
+
+  const ymax = hh + 3;
+  balloons.forEach((g) => {
+    const u = g.userData;
+    if (u.waiting) return;
+    if (u.frozen) { // clicked: hold still (or drift to her hand) until she pops it
+      if (u.glide) g.position.lerp(u.glide, Math.min(1, dt * 3));
+      g.rotation.z = Math.sin(t * 3 + u.phase) * 0.1;
+      return;
+    }
+    g.position.y += u.speed * dt * (partyT >= 0 ? 1 + 2.5 * Math.max(0, 1 - partyT / 2.5) : 1); // surge on the wish
+    if (g.position.y > ymax) respawn(g, false);
+    g.position.x = u.lane * hw * 0.9 + Math.sin(t * 1.3 + u.phase) * 0.3;
+    g.rotation.z = Math.sin(t * 1.1 + u.phase) * 0.08;
+  });
+
+  for (let i = 0; i < N; i++) {
+    if (cLife[i] <= 0) continue;
+    const j = i * 3;
+    cLife[i] -= dt;
+    if (cLife[i] <= 0) { cPos[j + 1] = -999; continue; }
+    cVel[j + 1] -= 9 * dt;
+    const drag = 1 - 0.9 * dt;
+    cVel[j] *= drag; cVel[j + 1] *= drag; cVel[j + 2] *= drag;
+    cPos[j] += (cVel[j] + Math.sin(t * 6 + i) * 0.5) * dt; cPos[j + 1] += cVel[j + 1] * dt; cPos[j + 2] += cVel[j + 2] * dt;
+  }
+  cGeo.attributes.position.needsUpdate = true;
+
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+frame();
+</script>
+</body>
+</html>
