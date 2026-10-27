@@ -28,12 +28,13 @@ body {
   color: var(--cream);
   font-family: var(--font-body);
 }
-#stage { position: fixed; inset: 0; }
+#stage { position: fixed; top: 0; right: 0; bottom: 0; left: 0; }
 #stage canvas { display: block; touch-action: none; cursor: pointer; }
 .ui {
-  position: fixed; inset: 0;
+  position: fixed; top: 0; right: 0; bottom: 0; left: 0;
   display: flex; flex-direction: column; justify-content: space-between; align-items: center;
-  padding-block: calc(24px + env(safe-area-inset-top, 0px)) calc(24px + env(safe-area-inset-bottom, 0px));
+  padding-top: calc(24px + env(safe-area-inset-top, 0px));
+  padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
   padding-left: max(16px, env(safe-area-inset-left, 0px));
   padding-right: max(16px, env(safe-area-inset-right, 0px));
   pointer-events: none;
@@ -69,6 +70,7 @@ button:focus-visible { outline: 3px solid var(--mint); outline-offset: 3px; }
 @keyframes rise { from { opacity: 0; transform: translateY(24px) scale(0.92); } to { opacity: 1; transform: none; } }
 @keyframes bob { 50% { transform: translateY(-6px) rotate(-1.5deg); } }
 @media (prefers-reduced-motion: reduce) { h1, h1 span { animation: none; } }
+@media (max-height: 520px) { h1 { font-size: 1.5rem; } h1 br, .tips { display: none; } #hint { margin-top: 4px; } .bottom { gap: 8px; } }
 </style>
 
 </head>
@@ -397,6 +399,8 @@ $('blow').addEventListener('click', () => lit && setLit(false));
 
 // audio
 let ac, keepAlive, tunePlaying = false, tunePaused = false, audioEnd = 0; // audioEnd: audio-clock time the last scheduled sound stops
+function chain(...nodes) { for (let i = 0; i < nodes.length - 1; i++) nodes[i].connect(nodes[i + 1]); }
+function safe(p) { if (p && p.catch) p.catch(() => {}); } // older Safari returns nothing from resume() / suspend()
 function silentWav() { // 1 s of silence as a WAV blob
   const n = 8000, b = new DataView(new ArrayBuffer(44 + n)), w = (o, s) => [...s].forEach((c, i) => b.setUint8(o + i, c.charCodeAt(0)));
   w(0, 'RIFF'); b.setUint32(4, 36 + n, true); w(8, 'WAVEfmt '); b.setUint32(16, 16, true); b.setUint16(20, 1, true); b.setUint16(22, 1, true);
@@ -410,7 +414,7 @@ function unlockAudio() { // iPhones mute web audio on silent mode unless the pag
 }
 function initAudio() { // must run inside a tap; sounds scheduled later (the celebration) then play without another tap
   ac = ac || new (window.AudioContext || window.webkitAudioContext)();
-  ac.resume().catch(() => {});
+  safe(ac.resume());
 }
 function startTune() {
   const btn = $('tune'), hz = { G4: 392, A4: 440, B4: 494, C5: 523, D5: 587, E5: 659, F5: 698, G5: 784 };
@@ -424,7 +428,7 @@ function startTune() {
     [['triangle', 1, 1], ['sine', 2, 0.3]].forEach(([type, mult, amp]) => { // the octave overtone carries on small phone speakers
       const o = ac.createOscillator(), a = ac.createGain();
       o.type = type; o.frequency.value = hz[name] * mult; a.gain.value = amp;
-      o.connect(a).connect(g); o.start(t); o.stop(t + d);
+      chain(o, a, g); o.start(t); o.stop(t + d);
     });
     t += d;
   });
@@ -439,7 +443,7 @@ function startTune() {
 $('tune').addEventListener('click', () => {
   if (tunePlaying) { // clicking during the song pauses it (and the crowd), clicking again resumes
     tunePaused = !tunePaused;
-    (tunePaused ? ac.suspend() : ac.resume()).catch(() => {});
+    safe(tunePaused ? ac.suspend() : ac.resume());
     $('tune').textContent = tunePaused ? 'Resume tune' : 'Pause tune';
     return;
   }
@@ -448,26 +452,40 @@ $('tune').addEventListener('click', () => {
 });
 
 // crowd sounds, all synthesised: applause from random noise claps, voices from a sawtooth through vowel filters
-function applause(t0, dur) {
-  const sr = ac.sampleRate, len = Math.floor(sr * dur), buf = ac.createBuffer(1, len, sr), d = buf.getChannelData(0);
-  for (let c = 0; c < dur * 120; c++) {
-    const at = Math.floor(Math.random() * len), pos = at / len, n = Math.floor(sr * (0.012 + Math.random() * 0.02)), amp = 0.2 + Math.random() * 0.8;
-    if (Math.random() > Math.min(1, pos * 6, (1 - pos) * 3)) continue; // thin out at the start and the end
-    for (let i = 0; i < n && at + i < len; i++) d[at + i] += (Math.random() * 2 - 1) * amp * Math.exp(-i / (n * 0.3));
+function applause(t0, dur) { // 24 people, each clapping at their own pace with a resonant "pop", spread left to right
+  const sr = ac.sampleRate, len = Math.floor(sr * dur), buf = ac.createBuffer(2, len, sr), ch = [buf.getChannelData(0), buf.getChannelData(1)];
+  const clap = (at, amp, f, pan) => {
+    const w = 2 * Math.PI * f / sr, r = 0.92, c1 = 2 * r * Math.cos(w), c2 = r * r, n = Math.floor(sr * 0.045);
+    const l = Math.cos((pan + 1) * Math.PI / 4), rt = Math.sin((pan + 1) * Math.PI / 4);
+    let y1 = 0, y2 = 0;
+    for (let i = 0; i < n && at + i < len; i++) { // decaying noise through a resonator = a hand-clap pop, not hiss
+      const y = (Math.random() * 2 - 1) * Math.exp(-i / (sr * 0.006)) + c1 * y1 - c2 * y2;
+      y2 = y1; y1 = y;
+      ch[0][at + i] += y * amp * l; ch[1][at + i] += y * amp * rt;
+    }
+  };
+  for (let p = 0; p < 24; p++) {
+    const period = 0.33 + Math.random() * 0.14, pan = Math.random() * 2 - 1, f = 900 + Math.random() * 1700, vol = 0.4 + Math.random() * 0.6;
+    const start = Math.random() * 1.2, stop = dur - Math.random() * 2.5; // people join late and stop early
+    for (let t = start + Math.random() * period; t < stop; t += period * (0.92 + Math.random() * 0.16)) clap(Math.floor(t * sr), vol, f * (0.9 + Math.random() * 0.2), pan);
   }
-  const src = ac.createBufferSource(), hp = ac.createBiquadFilter(), g = ac.createGain();
-  src.buffer = buf; hp.type = 'highpass'; hp.frequency.value = 900; g.gain.value = 0.3;
-  src.connect(hp).connect(g).connect(ac.destination); src.start(t0);
+  let peak = 0;
+  ch.forEach((d) => { for (let i = 0; i < len; i++) peak = Math.max(peak, Math.abs(d[i])); });
+  ch.forEach((d) => { for (let i = 0; i < len; i++) d[i] *= 0.9 / (peak || 1); });
+  const src = ac.createBufferSource(), hp = ac.createBiquadFilter(), lp = ac.createBiquadFilter(), g = ac.createGain();
+  src.buffer = buf; hp.type = 'highpass'; hp.frequency.value = 350; lp.type = 'lowpass'; lp.frequency.value = 7000;
+  g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(0.4, t0 + 0.4); g.gain.setValueAtTime(0.4, t0 + dur - 2); g.gain.linearRampToValueAtTime(0, t0 + dur);
+  chain(src, hp, lp, g, ac.destination); src.start(t0);
 }
 function voice(t, f0, f1, dur, amp, formants) {
   const o = ac.createOscillator(), g = ac.createGain(), v = ac.createOscillator(), vg = ac.createGain();
   o.type = 'sawtooth'; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f1, t + dur);
-  v.frequency.value = 6; vg.gain.value = f0 * 0.02; v.connect(vg).connect(o.frequency); // vibrato
+  v.frequency.value = 6; vg.gain.value = f0 * 0.02; v.connect(vg); vg.connect(o.frequency); // vibrato
   g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(amp, t + Math.min(0.08, dur / 3)); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
   formants.forEach(([fc, q, a]) => {
     const b = ac.createBiquadFilter(), ga = ac.createGain();
     b.type = 'bandpass'; b.frequency.value = fc; b.Q.value = q; ga.gain.value = a;
-    o.connect(b).connect(ga).connect(g);
+    chain(o, b, ga, g);
   });
   g.connect(ac.destination);
   o.start(t); v.start(t); o.stop(t + dur); v.stop(t + dur);
@@ -490,12 +508,12 @@ function celebrationSound() {
 const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
 let down = null;
 const cv = renderer.domElement;
-cv.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY, moved: false }; cv.setPointerCapture(e.pointerId); });
+cv.addEventListener('pointerdown', (e) => { down = { x: e.clientX, lx: e.clientX, y: e.clientY, moved: false }; cv.setPointerCapture(e.pointerId); });
 cv.addEventListener('pointermove', (e) => {
   if (!down) return;
   const dx = e.clientX - down.x;
   if (Math.abs(dx) + Math.abs(e.clientY - down.y) > 6) down.moved = true;
-  cake.rotation.y += (e.movementX || 0) * 0.01;
+  cake.rotation.y += (e.clientX - down.lx) * 0.01; down.lx = e.clientX;
 });
 cv.addEventListener('pointerup', (e) => {
   const d = down; down = null;
