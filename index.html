@@ -392,6 +392,7 @@ function respawn(g, scatter) {
 
 let popped = 0;
 const scoreEl = $('score');
+if (document.fonts) document.fonts.load('600 40px Fredoka'); // fetch the score font now so the first number never shows in a fallback
 function showScore(g) { // the running total pops up where the balloon burst, in the balloon's colour
   const v = g.position.clone().project(camera);
   scoreEl.textContent = popped;
