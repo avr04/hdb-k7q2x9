@@ -453,7 +453,7 @@ $('tune').addEventListener('click', () => {
 });
 
 // crowd sounds, all synthesised: applause from random noise claps, voices from a sawtooth through vowel filters
-function applause(t0, dur) { // 24 people, each clapping at their own pace with a resonant "pop", spread left to right
+function applause(t0, dur) { // 10 people, each clapping at their own pace with a resonant "pop", spread left to right
   const sr = ac.sampleRate, len = Math.floor(sr * dur), buf = ac.createBuffer(2, len, sr), ch = [buf.getChannelData(0), buf.getChannelData(1)];
   const clap = (at, amp, f, pan) => {
     const w = 2 * Math.PI * f / sr, r = 0.92, c1 = 2 * r * Math.cos(w), c2 = r * r, n = Math.floor(sr * 0.045);
@@ -465,7 +465,7 @@ function applause(t0, dur) { // 24 people, each clapping at their own pace with 
       ch[0][at + i] += y * amp * l; ch[1][at + i] += y * amp * rt;
     }
   };
-  for (let p = 0; p < 24; p++) {
+  for (let p = 0; p < 10; p++) {
     const period = 0.33 + Math.random() * 0.14, pan = Math.random() * 2 - 1, f = 900 + Math.random() * 1700, vol = 0.4 + Math.random() * 0.6;
     const start = Math.random() * 1.2, stop = dur - Math.random() * 2.5; // people join late and stop early
     for (let t = start + Math.random() * period; t < stop; t += period * (0.92 + Math.random() * 0.16)) clap(Math.floor(t * sr), vol, f * (0.9 + Math.random() * 0.2), pan);
