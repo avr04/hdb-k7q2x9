@@ -396,31 +396,50 @@ function setLit(on) {
 $('blow').addEventListener('click', () => lit && setLit(false));
 
 // audio
-let ac;
-let tunePlaying = false;
-$('tune').addEventListener('click', async () => {
+let ac, keepAlive, tunePlaying = false, tunePaused = false;
+function silentWav() { // 1 s of silence as a WAV blob
+  const n = 8000, b = new DataView(new ArrayBuffer(44 + n)), w = (o, s) => [...s].forEach((c, i) => b.setUint8(o + i, c.charCodeAt(0)));
+  w(0, 'RIFF'); b.setUint32(4, 36 + n, true); w(8, 'WAVEfmt '); b.setUint32(16, 16, true); b.setUint16(20, 1, true); b.setUint16(22, 1, true);
+  b.setUint32(24, 8000, true); b.setUint32(28, 8000, true); b.setUint16(32, 1, true); b.setUint16(34, 8, true); w(36, 'data'); b.setUint32(40, n, true);
+  for (let i = 0; i < n; i++) b.setUint8(44 + i, 128);
+  return URL.createObjectURL(new Blob([b], { type: 'audio/wav' }));
+}
+function unlockAudio() { // iPhones mute web audio on silent mode unless the page opens a "playback" audio session
+  try { navigator.audioSession.type = 'playback'; } catch (e) {}
+  try { keepAlive = keepAlive || Object.assign(new Audio(silentWav()), { loop: true }); keepAlive.play().catch(() => {}); } catch (e) {}
+}
+$('tune').addEventListener('click', () => {
   const btn = $('tune');
   if (tunePlaying) { // clicking during the song pauses it, clicking again resumes
-    if (ac.state === 'running') { await ac.suspend(); btn.textContent = 'Resume tune'; }
-    else { await ac.resume(); btn.textContent = 'Pause tune'; }
+    tunePaused = !tunePaused;
+    (tunePaused ? ac.suspend() : ac.resume()).catch(() => {});
+    btn.textContent = tunePaused ? 'Resume tune' : 'Pause tune';
     return;
   }
+  unlockAudio();
   ac = ac || new (window.AudioContext || window.webkitAudioContext)();
-  tunePlaying = true;
-  if (ac.state !== 'running') await ac.resume();
+  ac.resume().catch(() => {}); // not awaited: phones only allow it inside the tap, so the notes are scheduled right now
+  tunePlaying = true; tunePaused = false;
   const hz = { G4: 392, A4: 440, B4: 494, C5: 523, D5: 587, E5: 659, F5: 698, G5: 784 };
   const song = 'G4 .75,G4 .25,A4 1,G4 1,C5 1,B4 2,G4 .75,G4 .25,A4 1,G4 1,D5 1,C5 2,G4 .75,G4 .25,G5 1,E5 1,C5 1,B4 1,A4 1,F5 .75,F5 .25,E5 1,C5 1,D5 1,C5 2';
-  let t = ac.currentTime + 0.05;
+  let t = ac.currentTime + 0.1;
   song.split(',').forEach((n) => {
-    const [name, beats] = n.split(' '), d = beats * 0.42, o = ac.createOscillator(), g = ac.createGain();
-    o.type = 'triangle'; o.frequency.value = hz[name];
-    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.25, t + 0.03); g.gain.exponentialRampToValueAtTime(0.0001, t + d * 0.95);
-    o.connect(g).connect(ac.destination); o.start(t); o.stop(t + d); t += d;
+    const [name, beats] = n.split(' '), d = beats * 0.42, g = ac.createGain();
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.4, t + 0.03); g.gain.exponentialRampToValueAtTime(0.0001, t + d * 0.95);
+    g.connect(ac.destination);
+    [['triangle', 1, 1], ['sine', 2, 0.3]].forEach(([type, mult, amp]) => { // the octave overtone carries on small phone speakers
+      const o = ac.createOscillator(), a = ac.createGain();
+      o.type = type; o.frequency.value = hz[name] * mult; a.gain.value = amp;
+      o.connect(a).connect(g); o.start(t); o.stop(t + d);
+    });
+    t += d;
   });
   btn.textContent = 'Pause tune';
+  setTimeout(() => { if (ac.state !== 'running' && !tunePaused) $('hint').textContent = 'No sound? Check volume and silent mode.'; }, 800);
   const end = t, poll = setInterval(() => { // the audio clock stands still while paused, so the end is judged on it
     if (ac.currentTime <= end) return;
     clearInterval(poll); tunePlaying = false; btn.textContent = 'Play a tune';
+    if (keepAlive) keepAlive.pause();
   }, 300);
 });
 
