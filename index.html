@@ -354,12 +354,13 @@ function sparks(x, y, z, n, c, speed = 5) { // round burst: firework or balloon 
 
 // balloons
 const bColors = [0xff7aa8, 0x7be0c1, 0xffb347, 0x8fb8ff, 0xc79bff, 0xff6b6b, 0xf5e663];
-const balloons = [];
+const balloons = [], floorClip = [new THREE.Plane(new THREE.Vector3(0, 1, 0), 2.2)]; // keeps y >= -2.2
+renderer.localClippingEnabled = true;
 const bGeo = new THREE.SphereGeometry(0.7, 24, 18);
 for (let i = 0; i < 14; i++) { // the last 7 wait out of sight until the wish is made
   const g = new THREE.Group(), body = new THREE.Mesh(bGeo, mat(bColors[i % 7], 0.25));
-  body.scale.y = 1.25; body.userData.balloon = g; g.add(body);
-  const str = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, -0.9, 0), new THREE.Vector3(0.15, -1.9, 0), new THREE.Vector3(-0.1, -3, 0)]), new THREE.LineBasicMaterial({ color: 0xfff3df, transparent: true, opacity: 0.6 }));
+  body.scale.y = 1.25; body.material.clippingPlanes = floorClip; body.userData.balloon = g; g.add(body);
+  const str = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, -0.9, 0), new THREE.Vector3(0.15, -1.9, 0), new THREE.Vector3(-0.1, -3, 0)]), new THREE.LineBasicMaterial({ color: 0xfff3df, transparent: true, opacity: 0.6, clippingPlanes: floorClip }));
   g.add(str);
   g.userData = { color: new THREE.Color(bColors[i % 7]), lane: 0, speed: 0, phase: Math.random() * 6 };
   scene.add(g); balloons.push(g); respawn(g, true);
@@ -370,7 +371,7 @@ function respawn(g, scatter) {
   u.lane = (Math.random() < 0.5 ? -1 : 1) * (0.5 + Math.random() * 0.5);
   u.speed = 0.5 + Math.random() * 0.6;
   g.position.z = -3 + Math.random() * 4;
-  g.position.y = scatter ? (Math.random() * 2 - 1) * (hh + 3) : -hh - 3;
+  g.position.y = scatter ? -2 + Math.random() * (hh + 5) : -3.6 - Math.random() * 0.6; // new ones start just under the floor
 }
 
 function popBalloon(g) {
@@ -382,7 +383,7 @@ function popBalloon(g) {
 function releaseBalloons() { // a surprise bunch floats up when the wish is made
   balloons.forEach((g) => {
     if (!g.userData.waiting) return;
-    g.userData.waiting = false; g.visible = true; respawn(g, false); g.position.y -= Math.random() * 4;
+    g.userData.waiting = false; g.visible = true; respawn(g, false); g.position.y -= Math.random() * 1.5;
   });
 }
 
